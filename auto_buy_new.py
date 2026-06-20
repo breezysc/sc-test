@@ -151,27 +151,43 @@ def _find_window(window_name):
 
 
 def detect_game_window(server="global"):
-    """识别游戏窗口"""
+    """识别游戏窗口 - 优先搜索国服，其次国际服，排除浏览器窗口"""
     global game_window
     
-    if server == "global":
-        windows = _find_window("Path of Exile 2")
-        if not windows:
-            windows = _find_window("Path of Exile")
-        fallback_msg = "未找到 'Path of Exile 2' 窗口"
-    else:
-        windows = _find_window("流放之路")
-        fallback_msg = "未找到 '流放之路' 窗口"
+    # 需要排除的浏览器关键词（防止把浏览器标签页误识别为游戏窗口）
+    browser_keywords = ["chrome", "firefox", "edge", "iexplore", "safari", "opera", "brave", "浏览器"]
     
-    if not windows:
-        log(f"错误: {fallback_msg}")
+    # 同时搜索国服和国际服
+    all_windows = []
+    search_terms = []
+    
+    if server == "china":
+        search_terms = ["流放之路"]
+    elif server == "global":
+        search_terms = ["Path of Exile 2", "Path of Exile"]
+    else:
+        search_terms = ["流放之路", "Path of Exile 2", "Path of Exile"]
+    
+    for term in search_terms:
+        found = _find_window(term)
+        for w in found:
+            all_windows.append(w)
+    
+    # 排除浏览器窗口（关键：如果排除后为空，返回 False，让主程序尝试其他服务器）
+    game_windows = [w for w in all_windows if not any(bk in w["title"].lower() for bk in browser_keywords)]
+    
+    if not game_windows:
+        log(f"[窗口] 未找到匹配的游戏窗口（搜索了: {', '.join(search_terms)}，排除了浏览器窗口）")
         return False
     
-    if len(windows) == 1:
-        game_window = windows[0]
+    # 如果有多个匹配，优先选非浏览器且标题更短的（游戏窗口标题通常更简洁）
+    if len(game_windows) == 1:
+        game_window = game_windows[0]
     else:
-        # 选择第一个
-        game_window = windows[0]
+        # 优先选非浏览器窗口，再按标题长度排序（游戏窗口标题更简洁）
+        game_windows.sort(key=lambda w: len(w["title"]))
+        game_window = game_windows[0]
+        log(f"[窗口] 找到 {len(game_windows)} 个候选窗口，选择最可能的游戏窗口")
     
     log(f"[窗口] 已识别: {game_window['title']} 位置:({game_window['left']},{game_window['top']}) 大小:{game_window['width']}x{game_window['height']}")
     return True
@@ -680,6 +696,9 @@ def load_stash_detection_config():
 def verify_stash_opened(detection_config, max_retry=10, retry_interval=0.5):
     """验证仓库是否已打开（通过检测区域特征识别）
     
+    修复：使用 numpy 数组切片（相对坐标），与调试工具一致；
+          缺少检测区域/模板时回退到基础模板匹配。
+    
     Args:
         detection_config: 仓库检测配置
         max_retry: 最大重试次数
@@ -688,28 +707,44 @@ def verify_stash_opened(detection_config, max_retry=10, retry_interval=0.5):
     Returns:
         tuple: (is_opened, confidence)
     """
-    if not detection_config["region"] or detection_config["template"] is None:
-        log(f"[仓库检测] ⚠ 警告: 未配置仓库检测区域或模板 - 无法验证仓库是否打开")
-        log(f"[仓库检测] 请在 auto_buy_debug_tool.py 中点击'选择仓库检测区域'")
+    global game_window, template_img
+    
+    if game_window is None:
+        log("[仓库检测] 错误: 未识别游戏窗口，无法验证")
         return False, 0.0
     
-    x1, y1, x2, y2 = detection_config["region"]
     threshold = detection_config["threshold"]
-    template = detection_config["template"]
+    use_detection_config = (
+        detection_config["region"] is not None and
+        detection_config["template"] is not None
+    )
+    
+    if use_detection_config:
+        x1, y1, x2, y2 = detection_config["region"]
+        template = detection_config["template"]
+        log(f"[仓库检测] 使用检测区域验证 - 区域:({x1},{y1})-({x2},{y2}) 阈值:{threshold}")
+    else:
+        if template_img is None:
+            log("[仓库检测] ⚠ 警告: 缺少检测区域/模板且无基础模板 - 跳过验证直接执行存仓")
+            return True, 1.0
+        x1, y1, x2, y2 = 0, 0, game_window["width"], game_window["height"]
+        template = template_img
+        log(f"[仓库检测] 回退: 使用基础仓库模板匹配整个游戏窗口 阈值:{threshold}")
     
     for retry in range(max_retry):
         try:
+            # 先截取游戏窗口，再用 numpy 数组切片取区域（相对坐标，与调试工具一致）
             with mss.mss() as sct:
                 monitor = {
-                    "top": int(y1),
-                    "left": int(x1),
-                    "width": int(x2 - x1),
-                    "height": int(y2 - y1)
+                    "top": game_window["top"],
+                    "left": game_window["left"],
+                    "width": game_window["width"],
+                    "height": game_window["height"]
                 }
                 screenshot = sct.grab(monitor)
-                current_region = np.array(screenshot)[:, :, :3]
+                screen_img = np.array(screenshot)[:, :, :3]
             
-            # 计算特征匹配度
+            current_region = screen_img[y1:y2, x1:x2].copy()
             confidence = _get_template_confidence(current_region, template)
             
             if confidence >= threshold:
@@ -723,10 +758,7 @@ def verify_stash_opened(detection_config, max_retry=10, retry_interval=0.5):
         
         time.sleep(retry_interval)
     
-    # 验证失败
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    log(f"[{timestamp}] [警告] 存仓操作被阻止 - 未识别到有效仓库特征 (阈值: {threshold})")
-    log(f"[{timestamp}] [警告] 条件: 仓库检测区域特征识别 置信度 < {threshold}")
+    log(f"[仓库检测] [警告] 存仓操作被阻止 - 未识别到有效仓库特征 (阈值: {threshold})")
     return False, 0.0
 
 
@@ -1377,71 +1409,60 @@ def main():
         log("执行F5刷新（回城）")
         pyautogui.press("f5")
         
-        # 立即启动7秒动态识别（购买优先）
-        log("[识别] 启动7秒动态识别（购买动作最高优先级）...")
-        recognized_items = dynamic_warehouse_recognition(duration=7.0)
+        # ========== 10秒持续监控：反复检测并点击仓库 ==========
+        stash_opened = False
+        monitor_start = time.time()
+        monitor_timeout = 10.0  # 监控10秒
         
-        if recognized_items:
-            log(f"[识别] 识别期间处理了 {len(recognized_items)} 个动作")
-            # 检查是否触发了存仓（已点击仓库）
-            stash_opened = any(item.get("type") == "stash_open" for item in recognized_items)
-            
-            if stash_opened:
-                # 验证仓库是否真的打开（通过检测区域特征识别）
-                log("[存仓] 仓库已通过动态识别打开，验证仓库特征...")
-                stash_det_config = load_stash_detection_config()
-                is_opened, conf = verify_stash_opened(stash_det_config, max_retry=5, retry_interval=0.5)
-                
-                if is_opened:
-                    log(f"[存仓] ✓ 仓库特征验证通过 - 置信度: {conf:.3f}")
-                    if can_execute_storage():
-                        time.sleep(1)  # 短暂等待
-                        perform_stash_with_confidence(stash_cells)
-                        log("[存仓] 存仓完成")
-                else:
-                    log("[存仓] ✗ 仓库特征验证失败 - 阻止存仓操作")
-            else:
-                log("[识别] 仅识别到购买物品，继续检测下一轮...")
-            
-            log(f"  -> 继续检测下一个物品...")
-            last_buy_pos = None
-            continue
-        
-        # 7秒内未识别到任何东西，执行正常存仓流程
         if can_execute_storage():
-            log("[存仓] 使用模板匹配查找仓库...")
-            pos = match_stash_template()
-        if pos:
-            x, y = pos
-            log(f"[存仓] 找到仓库位置: ({x}, {y})")
+            log(f"[存仓] 开始10秒持续监控，检测仓库位置并尝试打开...")
             
-            # 点击仓库
-            pyautogui.moveTo(x, y, duration=0.1)
-            time.sleep(0.3)
-            pyautogui.click()
-            time.sleep(1)
-            pyautogui.click()
+            while time.time() - monitor_start < monitor_timeout:
+                # 尝试检测仓库
+                pos = match_stash_template()
+                
+                if pos:
+                    x, y = pos
+                    log(f"[存仓] 检测到仓库: ({x}, {y})，点击打开...")
+                    
+                    # 点击仓库（双击更保险）
+                    pyautogui.moveTo(x, y, duration=0.1)
+                    time.sleep(0.3)
+                    pyautogui.click()
+                    time.sleep(1)
+                    pyautogui.click()
+                    
+                    # 验证仓库是否真的打开
+                    stash_det_config = load_stash_detection_config()
+                    is_opened, conf = verify_stash_opened(
+                        stash_det_config, max_retry=5, retry_interval=0.5
+                    )
+                    
+                    if is_opened:
+                        log(f"[存仓] ✓ 仓库已打开 - 置信度: {conf:.3f}")
+                        stash_opened = True
+                        break
+                    else:
+                        log(f"[存仓] 点击后未打开，继续检测（已用 {time.time() - monitor_start:.1f}秒）")
+                else:
+                    # 未检测到，等待0.5秒再试
+                    elapsed = time.time() - monitor_start
+                    if int(elapsed) % 3 == 0 and elapsed < monitor_timeout - 0.5:
+                        log(f"[存仓] 监控中... 尚未检测到仓库（已用 {elapsed:.1f}秒，剩余 {monitor_timeout - elapsed:.1f}秒）")
+                    time.sleep(0.5)
             
-            # 验证仓库是否真的打开（通过检测区域特征识别）
-            log("[存仓] 验证仓库特征...")
-            stash_det_config = load_stash_detection_config()
-            is_opened, conf = verify_stash_opened(stash_det_config, max_retry=5, retry_interval=0.5)
-            
-            if is_opened:
-                log(f"[存仓] ✓ 仓库特征验证通过 - 置信度: {conf:.3f}")
-                # 执行智能存仓（基于置信度）
+            # 监控结束
+            if stash_opened:
+                log(f"[存仓] 仓库已打开，用时 {time.time() - monitor_start:.1f}秒，开始存仓...")
                 perform_stash_with_confidence(stash_cells)
                 log("[存仓] 存仓完成")
             else:
-                log("[存仓] ✗ 仓库特征验证失败 - 阻止存仓操作")
-                log(f"[存仓] 警告: 仓库未正确打开，置信度 {conf:.3f} < 阈值 {stash_det_config['threshold']}")
+                log(f"[存仓] ✗ 10秒内未成功检测到或打开仓库，跳过本次存仓")
         else:
-            log("[存仓] 警告: 未能找到仓库位置")
+            log("[存仓] 当前动作状态不允许存仓，跳过")
         
-        log("等待2秒后继续检测...")
+        log("等待2秒后继续检测下一个物品...")
         time.sleep(2)
-        
-        log(f"  -> 继续检测下一个物品...")
         last_buy_pos = None
 
 
