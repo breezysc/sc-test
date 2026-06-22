@@ -21,6 +21,7 @@ from ctypes import wintypes
 import ctypes
 
 from hsv_detector import detect_items, draw_detection_result
+from window_locator import locator
 
 
 class AutoBuyDebugTool:
@@ -154,7 +155,7 @@ class AutoBuyDebugTool:
                     if "hsv" in config:
                         self.hsv_config.update(config["hsv"])
 
-                    # 检测区域
+                    # 检测区域（可能是绝对或相对坐标）
                     if "roi" in config and config["roi"]:
                         roi = config["roi"]
                         self.detection_region = (
@@ -168,26 +169,16 @@ class AutoBuyDebugTool:
                     if "stash_template" in config:
                         self.template_img = np.array(config["stash_template"], dtype=np.uint8)
 
-                    # 仓库格子
+                    # 仓库格子（可能是绝对或相对坐标）
                     if "cells_map" in config:
                         self.stash_cells = config["cells_map"]
                         if self.stash_cells:
                             self._guess_grid_size()
 
-                    # 窗口信息
-                    if "game_window" in config:
-                        gw = config["game_window"]
-                        self.game_window = {
-                            "left": gw.get("left", 0),
-                            "top": gw.get("top", 0),
-                            "width": gw.get("width", 1920),
-                            "height": gw.get("height", 1080),
-                            "right": gw.get("left", 0) + gw.get("width", 1920),
-                            "bottom": gw.get("top", 0) + gw.get("height", 1080),
-                            "title": gw.get("title", "")
-                        }
+                    # 窗口信息：不保存，由运行时检测
+                    # 兼容旧配置：如果存在，不再读取（会误导）
 
-                    # 仓库位置
+                    # 仓库位置（可能是绝对或相对坐标）
                     if "stash_open_pos" in config:
                         self.stash_open_pos = config["stash_open_pos"]
 
@@ -195,7 +186,7 @@ class AutoBuyDebugTool:
                     if "game_server" in config:
                         self.game_server = config["game_server"]
 
-                    # 置信度检测区域和模板
+                    # 置信度检测区域和模板（已是相对坐标）
                     if "stash_confidence_region" in config:
                         scr = config["stash_confidence_region"]
                         self.stash_confidence_region = tuple(int(x) for x in scr)
@@ -207,12 +198,22 @@ class AutoBuyDebugTool:
                     if "inventory_confidence_template" in config:
                         self.inventory_confidence_template = np.array(config["inventory_confidence_template"], dtype=np.uint8)
 
-                    # 背包区域
+                    # 背包区域（相对坐标）
                     if "inventory_region" in config:
                         ir = config["inventory_region"]
                         self.inventory_region = tuple(int(x) for x in ir)
 
-                print(f"已加载配置: HSV区域 {self.detection_region}, {len(self.stash_cells)} 个仓库格子")
+                    # 坐标体系标记
+                    coord_sys = config.get("coord_system", "unknown")
+                    coord_note = ""
+                    if coord_sys == "relative":
+                        coord_note = " [相对坐标]"
+                    elif coord_sys == "absolute":
+                        coord_note = " [绝对坐标-需迁移]"
+                    else:
+                        coord_note = " [检测:建议重新选择区域]"
+
+                print(f"已加载配置: HSV区域 {self.detection_region}, {len(self.stash_cells)} 个仓库格子{coord_note}")
             except Exception as e:
                 print(f"加载配置失败: {e}")
 
@@ -238,7 +239,7 @@ class AutoBuyDebugTool:
             # HSV配置
             config["hsv"] = self.get_current_hsv()
 
-            # 检测区域
+            # 检测区域（相对坐标）
             if self.detection_region:
                 x1, y1, x2, y2 = self.detection_region
                 config["roi"] = {
@@ -248,30 +249,26 @@ class AutoBuyDebugTool:
                     "RIGHT": x2
                 }
 
-            # 仓库位置
+            # 仓库位置（相对坐标）
             config["stash_open_pos"] = self.stash_open_pos
 
-            # 仓库格子
+            # 仓库格子（相对坐标）
             config["cells_map"] = self.stash_cells
 
-            # 窗口信息
-            if self.game_window:
-                config["game_window"] = {
-                    "left": self.game_window["left"],
-                    "top": self.game_window["top"],
-                    "width": self.game_window["width"],
-                    "height": self.game_window["height"],
-                    "title": self.game_window["title"]
-                }
-            
+            # 不再保存 game_window - 由 window_locator 在运行时动态检测
+            config.pop("game_window", None)
+
             # 服务器类型
             config["game_server"] = self.game_server
+
+            # 坐标体系标记（关键：表示所有坐标都是相对游戏窗口的）
+            config["coord_system"] = "relative"
 
             # 仓库模板
             if self.template_img is not None:
                 config["stash_template"] = self.template_img.tolist()
 
-            # 置信度检测区域和模板
+            # 置信度检测区域和模板（已是相对坐标）
             if self.stash_confidence_region:
                 config["stash_confidence_region"] = list(self.stash_confidence_region)
             if self.stash_confidence_template is not None:
@@ -281,10 +278,14 @@ class AutoBuyDebugTool:
             if self.inventory_confidence_template is not None:
                 config["inventory_confidence_template"] = self.inventory_confidence_template.tolist()
 
+            # 背包区域（相对坐标）
+            if self.inventory_region:
+                config["inventory_region"] = list(self.inventory_region)
+
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2)
 
-            messagebox.showinfo("成功", f"配置已保存到: {self.config_path}")
+            messagebox.showinfo("成功", f"配置已保存到: {self.config_path} [相对坐标体系]")
         except Exception as e:
             messagebox.showerror("错误", f"保存配置失败: {e}")
 
@@ -548,24 +549,33 @@ class AutoBuyDebugTool:
         self.root.wait_window(sel_window)
 
     def _find_and_set_window(self, server):
-        """根据服务器类型查找窗口"""
-        if server == "global":
-            windows = self._find_window("Path of Exile 2")
+        """根据服务器类型查找窗口（使用 window_locator 模块）"""
+        # 第一步：使用 locator 检测窗口
+        if not locator.detect(server):
+            # 兜底：尝试用旧方法直接枚举窗口
+            if server == "global":
+                windows = self._find_window("Path of Exile 2")
+                if not windows:
+                    windows = self._find_window("Path of Exile")
+                if windows:
+                    windows = [w for w in windows if not any(
+                        kw in w["title"].lower() for kw in ["chrome", "firefox", "edge", "iexplore", "brave"])]
+            else:
+                windows = self._find_window("流放之路")
+                windows = [w for w in windows if not any(
+                    kw in w["title"].lower() for kw in ["chrome", "firefox", "edge", "iexplore", "brave"])]
+
             if not windows:
-                windows = self._find_window("Path of Exile")
-            fallback_msg = "未找到 'Path of Exile 2' 窗口"
-        else:
-            windows = self._find_window("流放之路")
-            fallback_msg = "未找到 '流放之路' 窗口"
+                messagebox.showerror("未找到窗口", "未找到游戏窗口，请确认游戏已启动")
+                return
 
-        if not windows:
-            messagebox.showerror("未找到窗口", fallback_msg + "，请确认游戏已启动")
-            return
+            if len(windows) == 1:
+                self.game_window = windows[0]
+                self.game_server = server
+                self._update_window_label()
+                return
 
-        if len(windows) == 1:
-            self.game_window = windows[0]
-            self.game_server = server
-        else:
+            # 多个窗口：让用户选择
             choices = [f"{w['title']} ({w['width']}x{w['height']})" for w in windows]
             choice = tk.StringVar(value=choices[0])
             sel_window = tk.Toplevel(self.root)
@@ -585,6 +595,8 @@ class AutoBuyDebugTool:
             self.root.wait_window(sel_window)
             return
 
+        # locator 检测成功
+        self.game_window = locator.window
         self.game_server = server
         self._update_window_label()
 
@@ -705,8 +717,20 @@ class AutoBuyDebugTool:
             x2 = max(selection["x1"], selection["x2"])
             y2 = max(selection["y1"], selection["y2"])
 
-            self.detection_region = (x1, y1, x2, y2)
-            self.region_label.config(text=f"区域: ({x1},{y1})-({x2},{y2})", foreground="green")
+            # 转换为相对游戏窗口的坐标
+            if self.game_window:
+                win_left = self.game_window["left"]
+                win_top = self.game_window["top"]
+            else:
+                win_left = 0
+                win_top = 0
+            rel_x1 = x1 - win_left
+            rel_y1 = y1 - win_top
+            rel_x2 = x2 - win_left
+            rel_y2 = y2 - win_top
+
+            self.detection_region = (rel_x1, rel_y1, rel_x2, rel_y2)
+            self.region_label.config(text=f"区域: ({rel_x1},{rel_y1})-({rel_x2},{rel_y2}) [相对]", foreground="green")
 
             calib_window.destroy()
             self.root.deiconify()
@@ -963,7 +987,12 @@ class AutoBuyDebugTool:
                 messagebox.showerror("错误", "模板区域太小")
                 return
 
-            # 截取并保存模板图片
+            # 转换为相对游戏窗口的坐标（保存中心点作为 stash_open_pos）
+            rel_cx = (x1 + x2) // 2 - win["left"]
+            rel_cy = (y1 + y2) // 2 - win["top"]
+            self.stash_open_pos = [rel_cx, rel_cy]
+
+            # 截取并保存模板图片（使用屏幕绝对坐标截图）
             with mss.mss() as sct:
                 monitor = {"top": y1, "left": x1, "width": x2 - x1, "height": y2 - y1}
                 template_screenshot = sct.grab(monitor)
@@ -972,8 +1001,8 @@ class AutoBuyDebugTool:
             calib_window.destroy()
             self.root.deiconify()
 
-            print(f"[模板] 已保存仓库模板，大小: {x2-x1}x{y2-y1}")
-            self.template_label.config(text=f"模板: 已保存 {x2-x1}x{y2-y1}", foreground="green")
+            print(f"[模板] 已保存仓库模板，大小: {x2-x1}x{y2-y1}，相对位置: ({rel_cx}, {rel_cy})")
+            self.template_label.config(text=f"模板: 已保存 {x2-x1}x{y2-y1} [相对]", foreground="green")
             messagebox.showinfo("成功", "仓库模板已保存！点击'测试打开仓库'开始识别并点击")
 
         def on_cancel(event=None):
@@ -1314,11 +1343,17 @@ class AutoBuyDebugTool:
                 messagebox.showerror("错误", "选择区域太小")
                 return
 
-            self.inventory_region = (x1, y1, x2, y2)
+            # 转换为相对游戏窗口的坐标
+            rel_x1 = x1 - win["left"]
+            rel_y1 = y1 - win["top"]
+            rel_x2 = x2 - win["left"]
+            rel_y2 = y2 - win["top"]
+
+            self.inventory_region = (rel_x1, rel_y1, rel_x2, rel_y2)
             self._generate_cells()
 
             self.inventory_label.config(
-                text=f"背包区域: {self.grid_cols}x{self.grid_rows}={len(self.stash_cells)}格",
+                text=f"背包区域: {self.grid_cols}x{self.grid_rows}={len(self.stash_cells)}格 [相对]",
                 foreground="green"
             )
 

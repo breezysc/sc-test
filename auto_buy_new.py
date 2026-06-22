@@ -20,6 +20,11 @@ import threading
 from ctypes import wintypes
 
 from hsv_detector import detect_items
+from window_locator import locator
+from template_locator_integrator import (
+    init_template_locator,
+    get_stash_cells,
+)
 
 # 禁用 PyAutoGUI 安全保护（鼠标移到屏幕角落不会触发异常）
 pyautogui.FAILSAFE = False
@@ -87,7 +92,8 @@ INVENTORY_CONFIG_PATH = "inventory_config.json"
 game_window = None  # {"left": x, "top": y, "width": w, "height": h}
 template_img = None  # 仓库模板图片
 empty_cell_template = None  # 空格子参考模板（cc.png）
-EMPTY_CELL_THRESHOLD = 0.85  # 空格子置信度阈值（降低识别敏感度）
+EMPTY_CELL_THRESHOLD = 0.7  # 空格子置信度阈值（低于此值才存仓）
+screenshot_btn_template = None  # 截图按钮模板
 
 # 优先级状态管理
 class ActionState:
@@ -112,84 +118,31 @@ ACTION_PRIORITY = {
 }
 
 
-def _find_window(window_name):
-    """通过窗口名查找窗口，返回窗口矩形"""
-    user32 = ctypes.windll.user32
-    
-    WNDENUMPROC = ctypes.WINFUNCTYPE(
-        ctypes.c_bool,
-        ctypes.c_void_p,
-        ctypes.c_void_p
-    )
-    
-    windows = []
-    
-    def enum_callback(hwnd, lParam):
-        length = user32.GetWindowTextLengthW(hwnd)
-        if length == 0:
-            return True
-        buff = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buff, length + 1)
-        title = buff.value
-        if window_name.lower() in title.lower():
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            windows.append({
-                "hwnd": hwnd,
-                "title": title,
-                "left": rect.left,
-                "top": rect.top,
-                "right": rect.right,
-                "bottom": rect.bottom,
-                "width": rect.right - rect.left,
-                "height": rect.bottom - rect.top
-            })
-        return True
-    
-    user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
-    return windows
+def detect_game_window(server="global", silent=False):
+    """识别游戏窗口 - 使用 window_locator 模块（排除浏览器窗口）
 
+    坐标转换说明：
+      配置中的所有坐标都是「相对于游戏窗口的」。
+      运行时调用 locator.to_screen(rel_x, rel_y) 转换为屏幕绝对坐标。
 
-def detect_game_window(server="global"):
-    """识别游戏窗口 - 优先搜索国服，其次国际服，排除浏览器窗口"""
+    Args:
+        server: "global"(国际服) 或 "china"(国服)
+        silent: 是否静默检测（不输出日志）
+
+    Returns:
+        bool: 是否检测成功。检测成功后 game_window 全局变量会被设置。
+    """
     global game_window
-    
-    # 需要排除的浏览器关键词（防止把浏览器标签页误识别为游戏窗口）
-    browser_keywords = ["chrome", "firefox", "edge", "iexplore", "safari", "opera", "brave", "浏览器"]
-    
-    # 同时搜索国服和国际服
-    all_windows = []
-    search_terms = []
-    
-    if server == "china":
-        search_terms = ["流放之路"]
-    elif server == "global":
-        search_terms = ["Path of Exile 2", "Path of Exile"]
-    else:
-        search_terms = ["流放之路", "Path of Exile 2", "Path of Exile"]
-    
-    for term in search_terms:
-        found = _find_window(term)
-        for w in found:
-            all_windows.append(w)
-    
-    # 排除浏览器窗口（关键：如果排除后为空，返回 False，让主程序尝试其他服务器）
-    game_windows = [w for w in all_windows if not any(bk in w["title"].lower() for bk in browser_keywords)]
-    
-    if not game_windows:
-        log(f"[窗口] 未找到匹配的游戏窗口（搜索了: {', '.join(search_terms)}，排除了浏览器窗口）")
+
+    # 使用 locator 统一检测
+    if not locator.detect(server):
+        if not silent:
+            log(f"[窗口] 未找到匹配的游戏窗口（服务器: {server}）")
         return False
-    
-    # 如果有多个匹配，优先选非浏览器且标题更短的（游戏窗口标题通常更简洁）
-    if len(game_windows) == 1:
-        game_window = game_windows[0]
-    else:
-        # 优先选非浏览器窗口，再按标题长度排序（游戏窗口标题更简洁）
-        game_windows.sort(key=lambda w: len(w["title"]))
-        game_window = game_windows[0]
-        log(f"[窗口] 找到 {len(game_windows)} 个候选窗口，选择最可能的游戏窗口")
-    
-    log(f"[窗口] 已识别: {game_window['title']} 位置:({game_window['left']},{game_window['top']}) 大小:{game_window['width']}x{game_window['height']}")
+
+    game_window = locator.window
+    if not silent:
+        log(f"[窗口] 已识别: {game_window['title']} 位置:({game_window['left']},{game_window['top']}) 大小:{game_window['width']}x{game_window['height']}")
     return True
 
 
@@ -220,40 +173,133 @@ def load_template():
     else:
         log("[警告] 未找到空格子模板 cc.png")
     
+    # 加载截图按钮模板
+    load_screenshot_btn_template()
+    
     return template_img is not None
+
+
+def load_screenshot_btn_template():
+    """加载截图按钮模板"""
+    global screenshot_btn_template
+    btn_template_path = "template_screenshot_btn.png"
+    if os.path.exists(btn_template_path):
+        screenshot_btn_template = cv2.imread(btn_template_path)
+        if screenshot_btn_template is not None:
+            log(f"[模板] 已加载截图按钮模板，大小: {screenshot_btn_template.shape[1]}x{screenshot_btn_template.shape[0]}")
+            return True
+        else:
+            log("[警告] 未能加载截图按钮模板")
+    else:
+        log("[警告] 未找到截图按钮模板文件")
+    return False
+
+
+def detect_screenshot_button():
+    """检测截图按钮，使用模板匹配
+    
+    Returns:
+        (found, confidence, screen_x, screen_y)
+        found: 是否检测到按钮
+        confidence: 置信度
+        screen_x, screen_y: 按钮中心屏幕坐标（检测到时有效）
+    """
+    global game_window, screenshot_btn_template
+    
+    if game_window is None or screenshot_btn_template is None:
+        return (False, 0.0, 0, 0)
+    
+    try:
+        # 使用游戏相对坐标，转换为屏幕坐标（扩大10px确保搜索区域大于模板）
+        rel_x1, rel_y1, rel_x2, rel_y2 = 598, 512, 674, 532
+        margin = 10
+        screen_x1 = game_window["left"] + max(0, rel_x1 - margin)
+        screen_y1 = game_window["top"] + max(0, rel_y1 - margin)
+        screen_x2 = game_window["left"] + min(game_window["width"], rel_x2 + margin)
+        screen_y2 = game_window["top"] + min(game_window["height"], rel_y2 + margin)
+        
+        # 截取按钮区域
+        with mss.mss() as sct:
+            monitor = {
+                "top": screen_y1,
+                "left": screen_x1,
+                "width": screen_x2 - screen_x1,
+                "height": screen_y2 - screen_y1
+            }
+            screenshot = sct.grab(monitor)
+            btn_img = np.array(screenshot)[:, :, :3]
+        
+        if btn_img.size == 0:
+            return (False, 0.0, 0, 0)
+        
+        # 模板匹配
+        gray_btn = cv2.cvtColor(btn_img, cv2.COLOR_BGR2GRAY)
+        gray_template = cv2.cvtColor(screenshot_btn_template, cv2.COLOR_BGR2GRAY)
+        
+        if gray_template.shape[0] <= gray_btn.shape[0] and gray_template.shape[1] <= gray_btn.shape[1]:
+            result = cv2.matchTemplate(gray_btn, gray_template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+        else:
+            h, w = gray_btn.shape
+            template_resized = cv2.resize(gray_template, (w, h))
+            result = cv2.matchTemplate(gray_btn, template_resized, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(result)
+        
+        confidence = float(max_val)
+        screen_cx = game_window["left"] + (rel_x1 + rel_x2) // 2
+        screen_cy = game_window["top"] + (rel_y1 + rel_y2) // 2
+        
+        # 调试：保存当前截图和模板的对比（用于分析置信度高低）
+        debug_dir = "detect_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        debug_current = cv2.cvtColor(btn_img, cv2.COLOR_BGR2RGB)
+        debug_template = cv2.cvtColor(screenshot_btn_template, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(f"{debug_dir}/btn_current.png", debug_current)
+        # 水平拼接：当前截图 | 模板
+        h1, w1 = debug_current.shape[:2]
+        h2, w2 = debug_template.shape[:2]
+        h_max = max(h1, h2)
+        canvas1 = np.zeros((h_max, w1, 3), dtype=np.uint8)
+        canvas1[:h1] = debug_current
+        canvas2 = np.zeros((h_max, w2, 3), dtype=np.uint8)
+        canvas2[:h2] = debug_template
+        compare = np.hstack([canvas1, canvas2])
+        cv2.putText(compare, f"Current ({w1}x{h1})", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+        cv2.putText(compare, f"Template ({w2}x{h2})", (w1+5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+        cv2.putText(compare, f"Match: {confidence:.4f}", (5, h_max-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
+        cv2.imwrite(f"{debug_dir}/btn_compare.png", compare)
+        
+        return (confidence > 0.8, confidence, screen_cx, screen_cy)
+        
+    except Exception as e:
+        return (False, 0.0, 0, 0)
 
 
 def check_cell_confidence(cell_region, cell_idx=0):
     """检查单个格子的置信度（是否为空格子）
-    
+
     Args:
-        cell_region: 格子区域 [x1, y1, x2, y2]
+        cell_region: 格子区域 [rel_x1, rel_y1, rel_x2, rel_y2] 相对游戏窗口
         cell_idx: 格子序号（用于唯一标识）
-    
+
     Returns:
         confidence: 置信度（0-1），高于 EMPTY_CELL_THRESHOLD 认为是空格子
     """
     global empty_cell_template, game_window
-    
+
     if empty_cell_template is None:
-        # 如果没有空格子模板，默认认为是空格子
         return 1.0
-    
+
     if game_window is None:
         return 0.0
-    
+
     try:
         x1, y1, x2, y2 = cell_region
-        
-        # cells_map 中的坐标已经是屏幕绝对坐标，不需要再加游戏窗口偏移
-        # 截取格子区域（直接使用绝对坐标）
+
+        # cells_map 中的坐标现在是「相对游戏窗口的坐标」
+        # 使用 locator 转换为屏幕绝对坐标进行截图
         with mss.mss() as sct:
-            monitor = {
-                "top": int(y1),
-                "left": int(x1),
-                "width": int(x2 - x1),
-                "height": int(y2 - y1)
-            }
+            monitor = locator.to_screen_monitor(x1, y1, x2, y2)
             screenshot = sct.grab(monitor)
             cell_img = np.array(screenshot)[:, :, :3]
         
@@ -379,10 +425,9 @@ def perform_stash_with_confidence(stash_cells):
             # 检查格子置信度（传入格子序号确保截图文件名唯一）
             confidence = check_cell_confidence(cell_region, idx)
             
-            # cells_map 中的坐标已经是屏幕绝对坐标，cx/cy 直接就是屏幕坐标
-            screen_cx = cx
-            screen_cy = cy
-            
+            # cx, cy 现在是相对游戏窗口的坐标 → 转换为屏幕绝对坐标
+            screen_cx, screen_cy = locator.to_screen(cx, cy)
+
             # 调试：仅输出存仓相关的关键日志
             if confidence < EMPTY_CELL_THRESHOLD:
                 # 识别到存仓的物品 - 关键日志，始终输出
@@ -424,15 +469,25 @@ def match_stash_template():
     """在游戏窗口内使用模板匹配找到仓库位置"""
     global game_window, template_img
     
+    # 初始化时间戳（函数属性）
+    if not hasattr(match_stash_template, 'last_match_time'):
+        match_stash_template.last_match_time = 0.0
+    
     if game_window is None:
-        log("[模板匹配] 错误: 未识别游戏窗口")
+        log("[仓库匹配] 错误: 未识别游戏窗口")
         return None
     
     if template_img is None:
-        log("[模板匹配] 错误: 未加载仓库模板")
+        log("[仓库匹配] 错误: 未加载仓库模板")
         return None
     
     try:
+        # 控制模板匹配频率，每2秒一次
+        current_time = time.time()
+        if current_time - match_stash_template.last_match_time < 2.0:
+            return None
+        match_stash_template.last_match_time = current_time
+        
         win = game_window
         template_w, template_h = template_img.shape[1], template_img.shape[0]
         
@@ -454,19 +509,19 @@ def match_stash_template():
         result = cv2.matchTemplate(gray_search, gray_template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
         
-        log(f"[模板匹配] 匹配度: {max_val:.3f}, 阈值: 0.5")
+        log(f"[仓库匹配] 匹配度: {max_val:.3f}, 阈值: 0.5")
         
         if max_val >= 0.5:
             center_x = win["left"] + max_loc[0] + template_w // 2
             center_y = win["top"] + max_loc[1] + template_h // 2
-            log(f"[模板匹配] 找到匹配！坐标: ({center_x}, {center_y})")
+            log(f"[仓库匹配] 找到匹配！坐标: ({center_x}, {center_y})")
             return (center_x, center_y)
         else:
-            log(f"[模板匹配] 匹配度太低: {max_val:.3f}")
+            log(f"[仓库匹配] 匹配度太低: {max_val:.3f}")
             return None
             
     except Exception as e:
-        log(f"[模板匹配] 失败: {e}")
+        log(f"[仓库匹配] 失败: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -763,6 +818,7 @@ def verify_stash_opened(detection_config, max_retry=10, retry_interval=0.5):
 
 
 def load_config():
+    """加载配置 - 物品检测 ROI 从配置文件读取，格子坐标由 TemplateLocator 提供"""
     hsv_config = {
         "h_min": 105,
         "h_max": 180,
@@ -772,7 +828,7 @@ def load_config():
         "v_max": 255
     }
     roi = {"LEFT": 80, "TOP": 285, "RIGHT": 857, "BOTTOM": 1057}
-    stash_open_pos = [900, 380]  # 默认仓库位置
+    stash_open_pos = [900, 380]
     
     try:
         if os.path.exists(CONFIG_PATH):
@@ -784,12 +840,14 @@ def load_config():
                     roi = config["roi"]
                 if "stash_open_pos" in config and len(config["stash_open_pos"]) == 2:
                     stash_open_pos = config["stash_open_pos"]
+            log("[配置] 从配置文件加载")
         elif os.path.exists(GOOD_CONFIG_PATH):
             with open(GOOD_CONFIG_PATH, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 hsv_config.update(config)
+            log("[配置] 从 good.json 加载")
     except Exception as e:
-        pass
+        log(f"[配置] 加载失败，使用默认值: {e}")
     
     return {
         "left": roi["LEFT"],
@@ -802,14 +860,23 @@ def load_config():
 
 
 def load_stash_cells():
-    """从 auto_buy_config.json 加载仓库格子（与 stash_debugger.py 共享配置）
+    """加载仓库格子 - 优先使用 TemplateLocator，失败时回退到配置文件
     
-    支持两种格式:
-    1. cells_map: [[[x1,y1],[x2,y2]], ...]  - stash_debugger.py 保存的格式（60格）
-    2. cells: [{"region":[x1,y1,x2,y2]}, ...]  - 旧格式兼容
+    支持的来源（优先级从高到低）:
+    1. TemplateLocator 动态生成
+    2. auto_buy_config.json -> cells_map
+    3. inventory_config.json -> target_cells
+    4. inventory_hash_config.json -> cells
     """
     
-    # 优先从 auto_buy_config.json 读取 cells_map（stash_debugger.py 保存的格式）
+    # 优先使用 TemplateLocator 动态生成的格子
+    locator_cells = get_stash_cells()
+    if locator_cells:
+        log(f"✓ 使用 TemplateLocator 动态生成的 {len(locator_cells)} 个仓库格子")
+        return locator_cells
+    
+    # 回退到配置文件
+    # 格式1: auto_buy_config.json -> cells_map
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -831,7 +898,7 @@ def load_stash_cells():
         except Exception as e:
             log(f"从 {CONFIG_PATH} 加载 cells_map 失败: {e}")
     
-    # 兼容格式1: inventory_config.json -> target_cells
+    # 格式2: inventory_config.json -> target_cells
     if os.path.exists(INVENTORY_CONFIG_PATH):
         try:
             with open(INVENTORY_CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -847,7 +914,7 @@ def load_stash_cells():
         except Exception as e:
             log(f"从 {INVENTORY_CONFIG_PATH} 加载失败: {e}")
     
-    # 兼容格式2: inventory_hash_config.json -> cells
+    # 格式3: inventory_hash_config.json -> cells
     if os.path.exists(HASH_CONFIG_PATH):
         try:
             with open(HASH_CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -934,21 +1001,29 @@ def dynamic_warehouse_recognition(duration=7.0):
     if not os.path.exists(CONFIG_PATH):
         log("[动态识别] 配置文件不存在")
         return []
-    
+
+    if game_window is None:
+        log("[动态识别] 未识别游戏窗口")
+        return []
+
     try:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             config = json.load(f)
-        
+
         roi = config.get("roi", {})
         if not roi:
             log("[动态识别] 未配置 roi 区域")
             return []
-        
-        # ROI 坐标（屏幕绝对坐标）
-        roi_left = int(roi.get("LEFT", 0))
-        roi_top = int(roi.get("TOP", 0))
-        roi_right = int(roi.get("RIGHT", 0))
-        roi_bottom = int(roi.get("BOTTOM", 0))
+
+        # ROI 坐标现在是「相对游戏窗口的」，转换为屏幕绝对坐标
+        rel_left = int(roi.get("LEFT", 0))
+        rel_top = int(roi.get("TOP", 0))
+        rel_right = int(roi.get("RIGHT", 0))
+        rel_bottom = int(roi.get("BOTTOM", 0))
+        roi_left = game_window["left"] + rel_left
+        roi_top = game_window["top"] + rel_top
+        roi_right = game_window["left"] + rel_right
+        roi_bottom = game_window["top"] + rel_bottom
         
         if roi_right <= roi_left or roi_bottom <= roi_top:
             log("[动态识别] ROI 坐标无效")
@@ -1029,7 +1104,10 @@ def dynamic_warehouse_recognition(duration=7.0):
                 
                 # 重置状态
                 current_action_state = ActionState.IDLE
-                time.sleep(0.5)
+                
+                # 购买完成后强制延迟2秒，再进入下一识别周期
+                log(f"[动态识别] ⏳ 购买完成，等待 2 秒后继续识别...")
+                time.sleep(2.0)
                 # 不执行 continue，继续检测仓库位置
                 
             # 2. 低优先级：检测仓库位置（在购买后也继续检测）
@@ -1185,10 +1263,9 @@ def perform_stash(stash_cells):
                 cx = (x1 + x2) // 2
                 cy = (y1 + y2) // 2
                 
-                # cells_map 中的坐标已经是屏幕绝对坐标，直接使用
-                screen_cx = cx
-                screen_cy = cy
-                
+                # cx, cy 现在是相对游戏窗口的坐标 → 转换为屏幕绝对坐标
+                screen_cx, screen_cy = locator.to_screen(cx, cy)
+
                 # 直接点击，不需要 moveTo 动画
                 pyautogui.click(screen_cx, screen_cy)
                 
@@ -1255,27 +1332,23 @@ def perform_stash_fast(stash_cells):
         for idx, cell in enumerate(stash_cells, 1):
             # 支持两种格式
             if isinstance(cell, list) and len(cell) == 2:
-                # 格式1: cells_map [[[x1,y1],[x2,y2]], ...]
+                # 格式1: cells_map [[[x1,y1],[x2,y2]], ...]  → 相对游戏窗口坐标
                 p1, p2 = cell
                 if isinstance(p1, list) and len(p1) >= 2 and isinstance(p2, list) and len(p2) >= 2:
                     x1, y1 = p1[0], p1[1]
                     x2, y2 = p2[0], p2[1]
                     cx = (x1 + x2) // 2
                     cy = (y1 + y2) // 2
-                    # cells_map 中的坐标已经是屏幕绝对坐标，直接使用
-                    screen_cx = cx
-                    screen_cy = cy
+                    screen_cx, screen_cy = locator.to_screen(cx, cy)
                     pyautogui.click(screen_cx, screen_cy)
             elif isinstance(cell, dict) and "region" in cell:
-                # 格式2: cells [{"region":[x1,y1,x2,y2]}, ...]
+                # 格式2: cells [{"region":[x1,y1,x2,y2]}, ...]  → 相对游戏窗口坐标
                 region = cell.get("region", [])
                 if len(region) >= 4:
                     x1, y1, x2, y2 = region
                     cx = (x1 + x2) // 2
                     cy = (y1 + y2) // 2
-                    # cells_map 中的坐标已经是屏幕绝对坐标，直接使用
-                    screen_cx = cx
-                    screen_cy = cy
+                    screen_cx, screen_cy = locator.to_screen(cx, cy)
                     pyautogui.click(screen_cx, screen_cy)
             
             # 每30毫秒遍历一个格子（与 debug_tool.py 一致）
@@ -1298,20 +1371,32 @@ def perform_stash_fast(stash_cells):
 
 
 def main():
+    global game_window
     log("========== AutoBuy 自动购买工具 (智能存仓版) ==========")
     log("存仓条件：每次购买后F5回城自动执行存仓")
     
     # 初始化：自动识别游戏窗口（优先国际服，其次国服）
     log("[初始化] 正在识别游戏窗口...")
+    server = "china"  # 默认国服
     if detect_game_window("global"):
         server = "global"
     else:
         log("[初始化] 未找到国际服，尝试检测国服...")
-        if detect_game_window("china"):
-            server = "china"
-        else:
+        if not detect_game_window("china"):
             log("[错误] 无法识别游戏窗口，退出")
             return
+    
+    # 初始化：使用 TemplateLocator 自动定位 Inventory 和 Stash
+    log(f"[初始化] 正在使用 TemplateLocator 定位 UI...")
+    locator_result = init_template_locator(server)
+    if locator_result["inventory_ok"]:
+        log(f"[初始化] ✓ Inventory 定位成功")
+    else:
+        log(f"[初始化] ⚠️  Inventory 定位失败，将使用配置文件")
+    if locator_result["stash_ok"]:
+        log(f"[初始化] ✓ Stash 定位成功")
+    else:
+        log(f"[初始化] ⚠️  Stash 定位失败，将使用配置文件")
     
     # 初始化：加载仓库模板
     log("[初始化] 正在加载仓库模板...")
@@ -1319,13 +1404,20 @@ def main():
         log("[警告] 未找到仓库模板，请使用 stash_debugger.py 保存模板")
     
     cfg = load_config()
-    left, top, right, bottom = cfg["left"], cfg["top"], cfg["right"], cfg["bottom"]
+    # config 中的坐标是「相对游戏窗口的」，运行时转换为屏幕绝对坐标
+    rel_left, rel_top, rel_right, rel_bottom = cfg["left"], cfg["top"], cfg["right"], cfg["bottom"]
+    left = game_window["left"] + rel_left
+    top = game_window["top"] + rel_top
+    right = game_window["left"] + rel_right
+    bottom = game_window["top"] + rel_bottom
     hsv_config = cfg["hsv_config"]
-    
+
     # 调试：输出实际加载的配置
-    log(f"[调试] 加载的检测区域: LEFT={left}, TOP={top}, RIGHT={right}, BOTTOM={bottom}")
+    log(f"[调试] 加载的检测区域(相对): LEFT={rel_left}, TOP={rel_top}, RIGHT={rel_right}, BOTTOM={rel_bottom}")
+    log(f"[调试] 游戏窗口位置: ({game_window['left']}, {game_window['top']})")
+    log(f"[调试] 检测区域(屏幕): LEFT={left}, TOP={top}, RIGHT={right}, BOTTOM={bottom}")
     log(f"[调试] 加载的HSV配置: H={hsv_config['h_min']}-{hsv_config['h_max']}, S={hsv_config['s_min']}-{hsv_config['s_max']}, V={hsv_config['v_min']}-{hsv_config['v_max']}")
-    
+
     stash_cells = load_stash_cells()
     
     log(f"检测区域: {right-left}x{bottom-top}")
@@ -1352,118 +1444,162 @@ def main():
         loop_count += 1
         current_time = time.time()
         
+        # 每 30 轮重新检测窗口位置（支持运行中移动窗口）
+        if loop_count % 30 == 0:
+            try:
+                new_window = detect_game_window("china", silent=True)
+                if isinstance(new_window, dict) and "left" in new_window:
+                    game_window = new_window
+                    global_locator.window = game_window
+            except Exception:
+                pass
+        
         # CPU监控：每5秒输出一次
         if current_time - last_cpu_log_time > CPU_LOG_INTERVAL:
             cpu_percent = psutil.cpu_percent(interval=None)
             log(f"【CPU】当前使用率: {cpu_percent}%")
             last_cpu_log_time = current_time
         
-        # 检测物品
+        # ========== 持续检测模式：按优先级检测 ==========
+        
+        # 每轮使用最新 game_window 计算检测区域（窗口移动时自动跟随）
+        if game_window and isinstance(game_window, dict):
+            current_left = game_window["left"] + rel_left
+            current_top = game_window["top"] + rel_top
+            current_right = game_window["left"] + rel_right
+            current_bottom = game_window["top"] + rel_bottom
+        else:
+            current_left, current_top, current_right, current_bottom = left, top, right, bottom
+        
+        # 1. 最高优先级：检测高亮物品
+        items = None
         try:
-            items = detect_highlights(left, top, right, bottom, hsv_config)
+            items = detect_highlights(current_left, current_top, current_right, current_bottom, hsv_config)
         except Exception as e:
             log(f"【循环 #{loop_count}】检测失败: {e}")
-            time.sleep(0.1)
-            continue
         
+        # 2. 第二优先级：检测截图按钮（仅当没有检测到物品时）
+        screenshot_btn_found = False
+        screenshot_confidence = 0.0
+        screenshot_btn_screen_x = 0
+        screenshot_btn_screen_y = 0
         if not items:
+            try:
+                screenshot_btn_found, screenshot_confidence, screenshot_btn_screen_x, screenshot_btn_screen_y = detect_screenshot_button()
+            except Exception as e:
+                log(f"【循环 #{loop_count}】截图按钮检测失败: {e}")
+        
+        # 3. 低优先级：检测仓库位置（仅当没有检测到物品和截图按钮时）
+        stash_pos = None
+        if not items and not screenshot_btn_found:
+            try:
+                stash_pos = match_stash_template()
+            except Exception as e:
+                log(f"【循环 #{loop_count}】仓库检测失败: {e}")
+        
+        # 处理检测结果
+        if items and len(items) > 0:
+            # 检测到物品 - 最高优先级，立即购买
+            max_item = max(items, key=lambda x: x["area"])
+            rx, ry, rw, rh = max_item["bbox"]
+            screen_x = current_left + rx + rw // 2
+            screen_y = current_top + ry + rh // 2
+            current_pos = (screen_x, screen_y)
+            
+            # 跳过重复位置
+            if last_buy_pos == current_pos:
+                if current_time - last_duplicate_log_time > DUPLICATE_LOG_INTERVAL:
+                    log(f"【循环 #{loop_count}】识别到物品 | 坐标=({screen_x}, {screen_y}) | 跳过重复位置")
+                    last_duplicate_log_time = current_time
+                time.sleep(0.1)
+                continue
+            
+            # ========== 正常购买流程 ==========
+            log(f"【循环 #{loop_count}】识别到物品 | 坐标=({screen_x}, {screen_y})")
+            log(f"  -> 执行Ctrl+左键购买...")
+            pyautogui.moveTo(screen_x, screen_y, duration=0.1)
+            ctrl_click(screen_x, screen_y)
+            
+            total_buy += 1
+            last_buy_pos = current_pos
+            
+            log(f"  -> 成功购买！累计购买: {total_buy}")
+            
+            # 移动鼠标到游戏窗口中心（相对坐标转换为屏幕绝对坐标）
+            safe_screen_x, safe_screen_y = locator.to_screen(game_window["width"] // 2, game_window["height"] // 2)
+            pyautogui.moveTo(safe_screen_x, safe_screen_y)
+            log(f"  -> 鼠标移至安全位置 ({safe_screen_x}, {safe_screen_y})")
+            
+            time.sleep(0.3)
+            
+            # ========== 购买完成后处理 ==========
+            # 检测截图按钮替代F5回城
+            btn_found, btn_conf, btn_sx, btn_sy = detect_screenshot_button()
+            log(f"点击截图按钮回城: 置信度={btn_conf:.4f}, 屏幕坐标=({btn_sx}, {btn_sy})")
+            
+            if btn_found:
+                pyautogui.moveTo(btn_sx, btn_sy, duration=0.1)
+                time.sleep(0.1)
+                pyautogui.click()
+            else:
+                log(f"⚠️ 截图按钮置信度不足({btn_conf:.4f})，跳过点击")
+                # 置信度不足时不点击，等待主循环检测到后再处理
+            
+            # 购买完成后等待2秒，然后继续检测（最高优先级）
+            log("等待2秒后继续检测...")
+            time.sleep(2)
+            
+            # 重置购买位置，允许购买下一个物品
+            last_buy_pos = None
+            
+        elif screenshot_btn_found:
+            # 检测到截图按钮 - 第二优先级
+            log(f"【循环 #{loop_count}】检测到截图按钮: 屏幕坐标=({screenshot_btn_screen_x}, {screenshot_btn_screen_y})，置信度: {screenshot_confidence:.4f}，点击...")
+            
+            pyautogui.moveTo(screenshot_btn_screen_x, screenshot_btn_screen_y, duration=0.1)
+            time.sleep(0.1)
+            pyautogui.click()
+            
+            log(f"【循环 #{loop_count}】✓ 已点击截图按钮")
+            
+            # 继续下一轮检测
+            time.sleep(0.5)
+            
+        elif stash_pos and can_execute_storage():
+            # 检测到仓库 - 执行存仓（低优先级）
+            x, y = stash_pos
+            log(f"【循环 #{loop_count}】检测到仓库: ({x}, {y})，尝试打开...")
+            
+            # 点击仓库（双击更保险）
+            pyautogui.moveTo(x, y, duration=0.1)
+            time.sleep(0.3)
+            pyautogui.click()
+            time.sleep(1)
+            pyautogui.click()
+            
+            # 验证仓库是否真的打开
+            stash_det_config = load_stash_detection_config()
+            is_opened, conf = verify_stash_opened(
+                stash_det_config, max_retry=5, retry_interval=0.5
+            )
+            
+            if is_opened:
+                log(f"[存仓] ✓ 仓库已打开 - 置信度: {conf:.3f}")
+                log("[存仓] 开始存仓...")
+                perform_stash_with_confidence(stash_cells)
+                log("[存仓] 存仓完成")
+            else:
+                log(f"[存仓] 点击后未打开")
+            
+            # 继续下一轮检测
+            time.sleep(0.5)
+            
+        else:
+            # 未检测到任何内容
             if current_time - last_no_item_log_time > NO_ITEM_LOG_INTERVAL:
                 log(f"【循环 #{loop_count}】未识别到物品")
                 last_no_item_log_time = current_time
             time.sleep(0.1)
-            continue
-        
-        # 找到最大的物品
-        max_item = max(items, key=lambda x: x["area"])
-        rx, ry, rw, rh = max_item["bbox"]
-        screen_x = left + rx + rw // 2
-        screen_y = top + ry + rh // 2
-        current_pos = (screen_x, screen_y)
-        
-        # 跳过重复位置
-        if last_buy_pos == current_pos:
-            if current_time - last_duplicate_log_time > DUPLICATE_LOG_INTERVAL:
-                log(f"【循环 #{loop_count}】识别到物品 | 坐标=({screen_x}, {screen_y}) | 跳过重复位置")
-                last_duplicate_log_time = current_time
-            time.sleep(0.1)
-            continue
-        
-        # ========== 正常购买流程 ==========
-        log(f"【循环 #{loop_count}】识别到物品 | 坐标=({screen_x}, {screen_y})")
-        log(f"  -> 执行Ctrl+左键购买...")
-        pyautogui.moveTo(screen_x, screen_y, duration=0.1)
-        ctrl_click(screen_x, screen_y)
-        
-        total_buy += 1
-        last_buy_pos = current_pos
-        
-        log(f"  -> 成功购买！累计购买: {total_buy}")
-        
-        # 移动鼠标到安全位置
-        pyautogui.moveTo(907, 591)
-        log(f"  -> 鼠标移至安全位置 (907, 591)")
-        
-        time.sleep(0.3)
-        
-        # 执行F5回城
-        log("执行F5刷新（回城）")
-        pyautogui.press("f5")
-        
-        # ========== 10秒持续监控：反复检测并点击仓库 ==========
-        stash_opened = False
-        monitor_start = time.time()
-        monitor_timeout = 10.0  # 监控10秒
-        
-        if can_execute_storage():
-            log(f"[存仓] 开始10秒持续监控，检测仓库位置并尝试打开...")
-            
-            while time.time() - monitor_start < monitor_timeout:
-                # 尝试检测仓库
-                pos = match_stash_template()
-                
-                if pos:
-                    x, y = pos
-                    log(f"[存仓] 检测到仓库: ({x}, {y})，点击打开...")
-                    
-                    # 点击仓库（双击更保险）
-                    pyautogui.moveTo(x, y, duration=0.1)
-                    time.sleep(0.3)
-                    pyautogui.click()
-                    time.sleep(1)
-                    pyautogui.click()
-                    
-                    # 验证仓库是否真的打开
-                    stash_det_config = load_stash_detection_config()
-                    is_opened, conf = verify_stash_opened(
-                        stash_det_config, max_retry=5, retry_interval=0.5
-                    )
-                    
-                    if is_opened:
-                        log(f"[存仓] ✓ 仓库已打开 - 置信度: {conf:.3f}")
-                        stash_opened = True
-                        break
-                    else:
-                        log(f"[存仓] 点击后未打开，继续检测（已用 {time.time() - monitor_start:.1f}秒）")
-                else:
-                    # 未检测到，等待0.5秒再试
-                    elapsed = time.time() - monitor_start
-                    if int(elapsed) % 3 == 0 and elapsed < monitor_timeout - 0.5:
-                        log(f"[存仓] 监控中... 尚未检测到仓库（已用 {elapsed:.1f}秒，剩余 {monitor_timeout - elapsed:.1f}秒）")
-                    time.sleep(0.5)
-            
-            # 监控结束
-            if stash_opened:
-                log(f"[存仓] 仓库已打开，用时 {time.time() - monitor_start:.1f}秒，开始存仓...")
-                perform_stash_with_confidence(stash_cells)
-                log("[存仓] 存仓完成")
-            else:
-                log(f"[存仓] ✗ 10秒内未成功检测到或打开仓库，跳过本次存仓")
-        else:
-            log("[存仓] 当前动作状态不允许存仓，跳过")
-        
-        log("等待2秒后继续检测下一个物品...")
-        time.sleep(2)
-        last_buy_pos = None
 
 
 def test_stash_flow():

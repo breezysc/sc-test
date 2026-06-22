@@ -1,0 +1,32 @@
+{
+  "inventory": {
+    "template_path": "templates/inventory/anchor.png",
+    "threshold": 0.7,
+    "scale_min": 0.7,
+    "scale_max": 1.5,
+    "scale_step": 0.05,
+    "offset": {
+      "dx1": -165,
+      "dy1": 295,
+      "dx2": 189,
+      "dy2": 443
+    }
+  },
+  "stash": {
+    "template_path": "templates/stash/anchor.png",
+    "threshold": 0.7,
+    "scale_min": 0.7,
+    "scale_max": 1.5,
+    "scale_step": 0.05,
+    "offset": {
+      "dx1": -167,
+      "dy1": 42,
+      "dx2": 189,
+      "dy2": 397
+    },
+    "grid": {
+      "cols": 12,
+      "rows": 12
+    }
+  }
+}
