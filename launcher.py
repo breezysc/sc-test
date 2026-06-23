@@ -13,15 +13,13 @@ class AutoBuyLauncher:
     def __init__(self, root):
         self.root = root
         self.root.title("AutoBuy 自动购买工具")
-        self.root.geometry("500x400")
+        self.root.geometry("400x280")
         self.root.resizable(False, False)
         
         # 默认配置
         self.config = {
             "server": "china",  # 默认国服
-            "test_mode": False,
-            "config_path": "",
-            "debug": False
+            "config_path": ""
         }
         
         self.create_widgets()
@@ -49,22 +47,8 @@ class AutoBuyLauncher:
                                        variable=self.server_var, value="global")
         global_radio.pack(anchor="w", padx=5)
         
-        # 模式选择
-        mode_frame = ttk.LabelFrame(self.root, text="运行模式", padding="10")
-        mode_frame.pack(fill="x", padx=10, pady=5)
-        
-        self.test_var = tk.BooleanVar(value=False)
-        test_check = ttk.Checkbutton(mode_frame, text="测试模式（直接存仓）", 
-                                     variable=self.test_var)
-        test_check.pack(anchor="w", padx=5)
-        
-        self.debug_var = tk.BooleanVar(value=False)
-        debug_check = ttk.Checkbutton(mode_frame, text="调试模式（输出详细日志）", 
-                                      variable=self.debug_var)
-        debug_check.pack(anchor="w", padx=5)
-        
         # 配置文件路径
-        path_frame = ttk.LabelFrame(self.root, text="配置文件", padding="10")
+        path_frame = ttk.LabelFrame(self.root, text="配置文件（可选）", padding="10")
         path_frame.pack(fill="x", padx=10, pady=5)
         
         path_inner = ttk.Frame(path_frame)
@@ -117,14 +101,6 @@ class AutoBuyLauncher:
         
         # 添加服务器参数
         cmd.append(f"--server={self.server_var.get()}")
-        
-        # 添加测试模式
-        if self.test_var.get():
-            cmd.append("--test-stash")
-        
-        # 添加调试模式
-        if self.debug_var.get():
-            cmd.append("--debug")
         
         # 添加配置文件路径
         config_path = self.path_entry.get().strip()

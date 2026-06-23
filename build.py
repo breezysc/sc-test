@@ -17,7 +17,6 @@ def build_exe():
     # PyInstaller 命令
     cmd = [
         "pyinstaller",
-        "--onefile",
         "--windowed",
         "--noupx",
         "--name=AutoBuy",
