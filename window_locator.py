@@ -38,6 +38,28 @@ class WindowLocator:
         """是否已经检测到窗口"""
         return self._window is not None
 
+    def is_active(self):
+        """检测游戏窗口是否在前台激活
+        
+        Returns:
+            bool: True 如果游戏窗口是当前前台窗口，否则 False
+        """
+        if self._window is None:
+            return False
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # 获取窗口句柄（_window 是字典，包含 'hwnd' 键）
+            hwnd = self._window.get("hwnd", 0)
+            if hwnd == 0:
+                return False
+            foreground_hwnd = user32.GetForegroundWindow()
+            is_active = hwnd == foreground_hwnd
+            return is_active
+        except Exception as e:
+            print(f"[is_active] 错误: {e}")
+            return False
+
     # ------------------------------------------------------------------
     # 窗口检测
     # ------------------------------------------------------------------

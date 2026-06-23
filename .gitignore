@@ -1,12 +1,24 @@
-﻿__pycache__/
+# Python
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
-detect_debug/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Debug
 stash_debug/
-.Python
+detect_debug/
+
+# Logs
 *.log
-.venv/
-venv/
-.env
+
+# Config (local config)
+local_config.json
+
+# OS
 .DS_Store
+Thumbs.db
