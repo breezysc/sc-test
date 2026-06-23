@@ -4,7 +4,7 @@ AutoBuy 自动购买工具 - 启动器
 """
 
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, filedialog
 import threading
 import subprocess
 import os
@@ -95,7 +95,7 @@ class AutoBuyLauncher:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def browse_game(self):
-        path = tk.filedialog.askopenfilename(
+        path = filedialog.askopenfilename(
             title="选择游戏可执行文件",
             filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")]
         )
