@@ -1,6 +1,6 @@
 """
 AutoBuy 自动购买工具 - 启动器
-功能：提供UI界面配置启动参数
+功能：提供UI界面配置游戏路径
 """
 
 import tkinter as tk
@@ -19,7 +19,7 @@ class AutoBuyLauncher:
         # 默认配置
         self.config = {
             "server": "china",  # 默认国服
-            "config_path": ""
+            "game_path": ""
         }
         
         self.create_widgets()
@@ -47,8 +47,8 @@ class AutoBuyLauncher:
                                        variable=self.server_var, value="global")
         global_radio.pack(anchor="w", padx=5)
         
-        # 配置文件路径
-        path_frame = ttk.LabelFrame(self.root, text="配置文件（可选）", padding="10")
+        # 游戏路径
+        path_frame = ttk.LabelFrame(self.root, text="游戏路径", padding="10")
         path_frame.pack(fill="x", padx=10, pady=5)
         
         path_inner = ttk.Frame(path_frame)
@@ -57,7 +57,7 @@ class AutoBuyLauncher:
         self.path_entry = ttk.Entry(path_inner, width=40)
         self.path_entry.pack(side="left", fill="x", expand=True, padx=5)
         
-        browse_btn = ttk.Button(path_inner, text="浏览", command=self.browse_config)
+        browse_btn = ttk.Button(path_inner, text="浏览", command=self.browse_game)
         browse_btn.pack(side="right")
         
         # 操作按钮
@@ -83,10 +83,10 @@ class AutoBuyLauncher:
         style = ttk.Style()
         style.configure("Accent.TButton", font=("Arial", 10, "bold"))
     
-    def browse_config(self):
+    def browse_game(self):
         path = filedialog.askopenfilename(
-            title="选择配置文件",
-            filetypes=[("JSON文件", "*.json"), ("所有文件", "*.*")]
+            title="选择游戏可执行文件",
+            filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")]
         )
         if path:
             self.path_entry.delete(0, tk.END)
@@ -96,19 +96,25 @@ class AutoBuyLauncher:
         self.status_label.config(text="启动中...", foreground="orange")
         self.root.update()
         
-        # 构建命令
+        # 获取游戏路径
+        game_path = self.path_entry.get().strip()
+        if not game_path:
+            messagebox.showerror("错误", "请选择游戏路径！")
+            self.status_label.config(text="请选择游戏路径", foreground="red")
+            return
+        
+        if not os.path.exists(game_path):
+            messagebox.showerror("错误", "游戏路径不存在！")
+            self.status_label.config(text="游戏路径不存在", foreground="red")
+            return
+        
+        # 构建命令 - 直接运行 auto_buy_new.py
         cmd = [sys.executable, "auto_buy_new.py"]
-        
-        # 添加服务器参数
         cmd.append(f"--server={self.server_var.get()}")
-        
-        # 添加配置文件路径
-        config_path = self.path_entry.get().strip()
-        if config_path:
-            cmd.append(f"--config={config_path}")
+        cmd.append(f"--game={game_path}")
         
         try:
-            # 启动子进程
+            # 直接启动程序（不在新窗口中运行）
             subprocess.Popen(cmd, cwd=os.path.dirname(__file__))
             self.status_label.config(text="已启动", foreground="green")
             messagebox.showinfo("成功", "AutoBuy 已启动！")
