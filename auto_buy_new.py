@@ -37,6 +37,12 @@ def log(message):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
+def stop_program():
+    """设置停止标志，外部启动器调用此函数来停止程序"""
+    global should_stop
+    should_stop = True
+    log("[停止] 收到停止信号，程序即将退出...")
+
 
 # 日志聚合管理
 class LogAggregator:
@@ -89,6 +95,7 @@ HASH_CONFIG_PATH = "inventory_hash_config.json"
 INVENTORY_CONFIG_PATH = "inventory_config.json"
 
 # 全局变量
+should_stop = False  # 用于外部启动器控制退出循环
 game_window = None  # {"left": x, "top": y, "width": w, "height": h}
 template_img = None  # 仓库模板图片
 empty_cell_template = None  # 空格子参考模板（cc.png）
@@ -1043,7 +1050,7 @@ def restart_game_via_wegame():
 
 def monitor_game_restart():
     """持续监控游戏状态，必要时重启"""
-    while True:
+    while not should_stop:
         # 检测游戏窗口
         game_detected = detect_game_window("china", silent=True)
         
@@ -2256,7 +2263,7 @@ def dynamic_warehouse_recognition(duration=7.0):
     
     # 持续识别循环
     iteration = 0
-    while True:
+    while not should_stop:
         # 检查是否超时
         elapsed = time.time() - start_time
         if elapsed >= duration:
@@ -2585,14 +2592,20 @@ def perform_stash_fast(stash_cells):
         pyautogui.MINIMUM_SLEEP = original_min_sleep
 
 
-def main():
-    global game_window, just_purchased
+def main(server_type="china", game_path=None):
+    global game_window, just_purchased, SERVER_TYPE, GAME_PATH, should_stop
+    
+    # 接收外部传入的参数
+    SERVER_TYPE = server_type
+    GAME_PATH = game_path
+    should_stop = False  # 每次启动时重置为 False
+    
     log("========== AutoBuy 自动购买工具 (智能存仓版) ==========")
     log("存仓条件：每次购买后F5回城自动执行存仓")
     log("支持游戏闪退后自动重启（国服）")
     
-    # 设置默认服务器为国服
-    server = "china"
+    # 设置服务器
+    server = server_type
     
     # 初始化：尝试识别游戏窗口
     log("[初始化] 正在识别游戏窗口...")
@@ -2668,7 +2681,7 @@ def main():
     
     log("开始主循环...")
     
-    while True:
+    while not should_stop:
         loop_count += 1
         current_time = time.time()
         
@@ -2998,4 +3011,4 @@ if __name__ == "__main__":
     if args.test_stash:
         test_stash_flow()
     else:
-        main()
+        main(server_type=args.server or "china", game_path=args.game)

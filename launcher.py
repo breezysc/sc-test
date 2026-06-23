@@ -205,9 +205,24 @@ class AutoBuyLauncher:
         """暂停/停止程序"""
         self.is_running = False
         
+        # 通过模块导入的方式调用 stop_program
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            # 创建临时进程来设置停止标志
+            stop_cmd = [
+                sys.executable,
+                "-c",
+                f"import auto_buy_new; auto_buy_new.stop_program()"
+            ]
+            subprocess.run(stop_cmd, cwd=os.path.dirname(os.path.abspath(__file__)),
+                         capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception as e:
+            self.log_message(f"[错误] 停止程序失败: {e}", "error")
+        
+        # 终止子进程
         if self.process:
             try:
-                # 尝试优雅关闭
                 self.process.terminate()
                 time.sleep(0.5)
                 if self.process.poll() is None:
