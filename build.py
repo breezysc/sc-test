@@ -19,6 +19,7 @@ def build_exe():
         "pyinstaller",
         "--onefile",
         "--windowed",
+        "--noupx",
         "--name=AutoBuy",
         "--icon=icon.ico",
         "--add-data=templates;templates",
