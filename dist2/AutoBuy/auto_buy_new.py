@@ -2983,14 +2983,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # 存储游戏路径到全局变量
+    global GAME_PATH
     if args.game:
-        global GAME_PATH
         GAME_PATH = args.game
         log(f"[启动] 使用自定义游戏路径: {GAME_PATH}")
     
     # 存储服务器类型到全局变量
+    global SERVER_TYPE
     if args.server:
-        global SERVER_TYPE
         SERVER_TYPE = args.server
         log(f"[启动] 服务器类型: {SERVER_TYPE}")
     
