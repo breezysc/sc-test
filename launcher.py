@@ -158,14 +158,15 @@ class AutoBuyLauncher:
                 f"--game={self.game_path}"
             ]
             
-            # 使用 Popen 获取输出
+            # 使用 Popen 获取输出，CREATE_NO_WINDOW 阻止创建新窗口
             self.process = subprocess.Popen(
                 cmd,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             
             # 实时读取输出
